@@ -1,0 +1,92 @@
+stages:
+  - Prep
+  - LintUnit
+  - Test
+  - Publish
+  
+before_script:
+  - echo -e "machine gitlab.example.com\nlogin gitlab-ci-token\npassword ${CI_JOB_TOKEN}" > ~/.netrc
+
+pre-reqs:
+  stage: Prep
+  script:
+    - chef env --chef-license accept
+  allow_failure: false
+  except:
+  - tags
+
+git-tag-check:
+  stage: Prep
+  script:
+    - version=$(chef exec ruby -e 'require "chef/cookbook/metadata"; metadata=Chef::Cookbook::Metadata.new; metadata.from_file("metadata.rb"); puts metadata.version')
+    - git rev-parse "v${version}"  >/dev/null 2>&1 && echo "Tag v${version} exists" && exit 1 || echo "Tag v${version} does not exist"
+  allow_failure: false
+  except:
+  - tags
+
+install:
+  stage: Prep
+  script:
+    - chef install
+    - chef update
+  when: on_success
+  allow_failure: false
+  artifacts:
+    paths:
+      - Policyfile.lock.json
+  except:
+  - tags
+
+lint:
+  stage: LintUnit
+  script:
+    - chef exec cookstyle .
+  when: on_success
+  allow_failure: false
+  except:
+  - tags
+
+unit:
+  stage: LintUnit
+  script:
+    - ls
+    - chef install
+    - echo 'chef exec rspec .'
+  when: on_success
+  allow_failure: false
+  dependencies:
+    - install
+  except:
+  - tags
+
+integration:
+  stage: Test
+  script:
+    - echo 'chef exec kitchen test'
+  dependencies:
+    - install
+  when: on_success
+  allow_failure: false
+  except:
+  - tags
+
+export:
+  stage: Publish
+  only:
+    - master
+  script:
+    - new_version=$(chef exec ruby -e 'require "chef/cookbook/metadata"; metadata=Chef::Cookbook::Metadata.new; metadata.from_file("metadata.rb"); puts metadata.version')
+    # Configure Git to be able to push a commit back to the repo
+    # The gitlab_ci_token does not have permission and cannot be given the permission
+    - git config --global user.email "${CI_EMAIL}"
+    - git config --global user.name "${CI_USERNAME}"
+    - git remote remove origin && git remote add origin https://gitlab-ci-token:${sa_token}@gitlab.example.com/$CI_PROJECT_PATH.git
+    - git tag "v$new_version"
+    - git push origin --tags
+  dependencies:
+    - install
+    - integration
+  when: on_success
+  allow_failure: false
+  except:
+  - tags

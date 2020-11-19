@@ -1,0 +1,108 @@
+stages:
+  - Prep
+  - Build
+  - Test
+  - Publish
+  - Deploy
+  
+before_script:
+  # Enable the runner to checkout other cookbooks from git i.e. in `chef install`
+  - echo -e "machine gitlab.example.com\nlogin gitlab-ci-token\npassword ${CI_JOB_TOKEN}" > ~/.netrc
+
+pre-reqs:
+  stage: Prep
+  script:
+    - chef env --chef-license accept
+  allow_failure: false
+
+lint:
+  stage: Prep
+  script:
+    - chef exec cookstyle .
+  when: on_success
+  allow_failure: false
+
+install:
+  stage: Build
+  script:
+    - chef install ${CI_PROJECT_NAME}.rb
+    - chef update ${CI_PROJECT_NAME}.rb
+  when: on_success
+  allow_failure: false
+  artifacts:
+    paths:
+      - ${CI_PROJECT_NAME}.lock.json
+
+integration:
+  stage: Test
+  script:
+    - echo 'chef exec kitchen test'
+  dependencies:
+    - install
+  when: on_success
+  allow_failure: false
+
+export:
+  stage: Publish
+  only:
+    - master
+  script:
+    - mkdir policy_archive
+    - chef install ${CI_PROJECT_NAME}.rb
+    - chef export ${CI_PROJECT_NAME}.rb policy_archive/ -a
+    # Configure Git to be able to push a commit back to the repo
+    # The gitlab_ci_token does not have permission and cannot be given the permission
+    - git config --global user.email "${CI_EMAIL}"
+    - git config --global user.name "${CI_USERNAME}"
+    - git remote remove origin && git remote add origin https://gitlab-ci-token:${TOKEN_WITH_WRITE_ACCESS}@gitlab.example.com/$CI_PROJECT_PATH.git
+    - git add ${CI_PROJECT_NAME}.lock.json
+    - git commit -m "Update ${CI_PROJECT_NAME}.lock.json [skip ci]"
+    - git push origin HEAD:master
+  dependencies:
+    - install
+    - integration
+  when: on_success
+  allow_failure: false
+  artifacts:
+    paths:
+      - policy_archive/
+
+.policy_promote: &policy_promote_template
+  dependencies:
+    - export
+  script:
+    # Ensure locales is configured for UTF-8
+    - export LC_ALL=en_US.UTF-8
+    - export LANG=en_US.UTF-8
+    - export LANGUAGE=en_US.UTF-8
+    # Get Chef Server credentials and key into the .chef directory in your preferred manner
+    - knife config use-profile demo
+    - knife config show
+    # Show summary of policy groups before upload
+    - chef show-policy ${CI_PROJECT_NAME} --no-pager
+    - chef push-archive ${CI_ENVIRONMENT_NAME} policy_archive/${CI_PROJECT_NAME}-*.tgz
+    # Show summary of policy groups after upload
+    - chef show-policy ${CI_PROJECT_NAME} --no-pager
+    # Show details of package_server_policy policy now in policy group
+    - chef show-policy ${CI_PROJECT_NAME} ${CI_ENVIRONMENT_NAME} --no-pager
+
+promote_to_dev:
+  stage: Deploy
+  only:
+    - master
+  # Define this job deploys to dev and sets $CI_ENVIRONMENT_NAME env var
+  environment: development
+  # Automatically release to dev (on_success is default)
+  when: on_success
+  <<: *policy_promote_template
+
+promote_to_prod:
+  stage: Deploy
+  only:
+    - master
+  # Define this job deploys to prod and sets $CI_ENVIRONMENT_NAME env var
+  environment: production
+  # Require manual approval to release to prod
+  when: manual
+  allow_failure: false
+  <<: *policy_promote_template
