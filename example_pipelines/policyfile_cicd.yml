@@ -36,7 +36,7 @@ install:
 integration:
   stage: Test
   script:
-    - echo 'chef exec kitchen test'
+    - chef exec kitchen test
   dependencies:
     - install
   when: on_success
